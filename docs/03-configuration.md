@@ -234,7 +234,7 @@ $table = (new Pass)->getTable(); // Uses config value
 The migrations include optimized indexes for common queries:
 
 - `ticket_types`: `ticketable_type + ticketable_id`, `code`, sales window columns
-- `passes`: `pass_no` (unique), `holder_email`, state columns, `ticket_type_id`
+- `passes`: `pass_no` (unique), `transfer_expires_at`, state columns, `ticket_type_id`
 - `pass_transfers`: `pass_id`, `created_at`
 
 ### JSON Column Optimization

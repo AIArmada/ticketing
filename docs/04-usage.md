@@ -31,7 +31,7 @@ class Workshop extends Model implements TicketableInterface
 
     public function effectivePricingMode(): PricingMode
     {
-        return PricingMode::Flat;
+        return PricingMode::Paid;
     }
 
     public function transferWindowEndsAt(): ?CarbonImmutable
@@ -92,8 +92,17 @@ ownerless rows are not included in tenant reads.
 | `max_quantity` | `?int` | Max tickets per purchase (null = unlimited) |
 | `sales_starts_at` | `?CarbonImmutable` | When sales open (null = immediately) |
 | `sales_ends_at` | `?CarbonImmutable` | When sales close (null = no end) |
-| `admits_quantity` | `int` | How many admissions this ticket type grants (default `1`) |
-| `min_quantity` | `?int` | Min tickets per purchase (null = no minimum) |
+| `access_type` | `?string` | `general`, `general_admission`, `reserved_seating`, `vip`, `complimentary`, `entry` |
+| `seating_mode` | `?SeatingMode` | `null`, `general_admission`, `assigned`, `hybrid` |
+| `admits_quantity` | `?int` | How many admissions one ticket grants (default `1`) |
+| `min_quantity` | `?int` | Minimum purchasable quantity |
+| `sort_order` | `?int` | Display order |
+| `status` | `?string` | `draft`, `active`, `paused`, `sold_out`, `ended`, `cancelled` (default `active`) |
+| `visibility` | `?string` | `public`, `private`, `hidden` (default `public`) |
+
+`EnsureTicketTypeAction` whitelists the attributes above explicitly; anything else in the
+array (for example `quota` or `pricing_mode`) is silently dropped. There is no `capacity`
+column on `ticket_types` — per-scope capacity lives on `events` occurrences/sessions.
 
 Ticket types support `public`, `private`, and `hidden` visibility. Hidden ticket types remain manageable in administrative queries but cannot be added to a cart and are excluded by `TicketType::public()`.
 
@@ -145,8 +154,8 @@ $passes = app(IssuePassesAction::class)->handle($context);
 ```
 
 Each pass receives:
-- A unique pass number (e.g., `PASS-000001`)
-- A QR code and barcode
+- A unique pass number (prefix from `ticketing.defaults.pass_no_prefix` plus 8 random uppercase characters, e.g. `PASS-3KD9FZQ1M`)
+- A UUID `qr_code` and a 16-character random `barcode`
 - Its initial state (`Issued`)
 
 ## Transferring a Pass
@@ -185,19 +194,21 @@ app(TransferPassToHolderAction::class)->handle(
 
 ### Checking Transfer Eligibility
 
+`canTransfer()` lives on the transfer service, not on the model:
+
 ```php
 use AIArmada\Ticketing\Contracts\PassTransferServiceInterface;
 
-if (app(PassTransferServiceInterface::class)->canTransfer($pass)) {
-    // Pass is valid and within transfer window
-}
+$transferService = app(PassTransferServiceInterface::class);
 
-if ($pass->transfer_expires_at !== null && now()->isAfter($pass->transfer_expires_at)) {
-    // Past the transfer window deadline
+if ($transferService->canTransfer($pass)) {
+    // Pass is valid and not past its transfer_expires_at date
 }
 ```
 
-A pass can transfer when `isValid()` passes (not Used, Cancelled, Revoked, Voided, or Expired, and no blocked registration status) and it is not past its `transfer_expires_at` date.
+A pass can transfer when `Pass::isValid()` is `true` and it is not past
+`transfer_expires_at`. `transfer_expires_at` is populated from the ticketable's
+`transferWindowEndsAt()` (plus `ticketing.transfers.expiry_grace_period`).
 
 ## Bulk Transfer
 
@@ -225,20 +236,23 @@ Exactly one current holder per pass is enforced by this locked sequence, not by 
 
 ## Pass State Transitions
 
-States and allowed transitions:
+States and allowed transitions, exactly as configured in `States/PassState::config()`:
 
 | Current State | Can transition to |
 |---------------|-------------------|
 | `Pending` | `Issued`, `Expired` |
 | `Issued` | `Activated`, `Cancelled`, `Revoked`, `Expired` |
 | `Activated` | `Used`, `Cancelled`, `Revoked`, `Expired` |
-| `Used` | `Revoked` |
 | `Cancelled` | `Revoked` |
+| `Used` | `Revoked` |
 | `Revoked` | `Voided` |
 | `Voided` | *(terminal — no transitions)* |
 | `Expired` | *(terminal — no transitions)* |
 
 ### Transition Actions
+
+There is no per-state action class. `RevokePassAction` is the only lifecycle action in
+the package; every other transition goes through the state machine:
 
 ```php
 use AIArmada\Ticketing\Actions\RevokePassAction;
@@ -273,7 +287,8 @@ $pass->save();
 
 The package dispatches `PassIssued` and `PassTransferred` events. When `aiarmada/orders` is installed, passes are automatically issued when an order transitions to `paid`.
 
-To send passes via email, implement `PassDeliveryServiceInterface`:
+To send passes via email, implement `PassDeliveryServiceInterface`. Holder contact data
+lives on the pass's current `PassHolder` row, not on the pass itself:
 
 ```php
 use AIArmada\Ticketing\Contracts\PassDeliveryServiceInterface;
