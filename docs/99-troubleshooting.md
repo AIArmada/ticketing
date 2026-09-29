@@ -28,11 +28,7 @@ TICKETING_TABLE_PREFIX=festival_
 
 **Problem**: Pass notifications are not sent.
 
-**Solution**: Holder contact data is written to the pass's current `PassHolder` row, never
-to the pass itself. `IssuePassesAction` creates those rows from
-`PassIssuanceContext->holderAttributes`. If the holder has no email, the delivery service
-skips sending. Always populate `name` and `email` per holder. When issuing multiple passes,
-pass one holder array per pass in order:
+**Solution**: The issue actions set holder email from `PassIssuanceContext->holderAttributes`. If null, the delivery service skips sending. Always populate `name` and `email` per holder. When issuing multiple passes, pass one holder array per pass in order:
 
 ```php
 $context = new PassIssuanceContext(
@@ -46,34 +42,26 @@ $context = new PassIssuanceContext(
 
 ### Pass Won't Transfer
 
-**Problem**: A transfer throws `RuntimeException: Pass cannot be transferred in its current state.`
+**Problem**: `PassTransferServiceInterface::canTransfer($pass)` returns false.
 
-**Solution**: `DefaultPassTransferService::canTransfer()` requires `Pass::isValid()` and a
-transfer window that has not closed:
+**Solution**: Check the pass is valid and within its transfer window:
 
 ```php
-use AIArmada\Ticketing\Contracts\PassTransferServiceInterface;
-use AIArmada\Ticketing\Enums\PassStatus;
-use AIArmada\Ticketing\Models\Pass;
-
-$pass = Pass::query()->firstOrFail();
-
-// Terminal statuses (Used, Revoked, Voided, Expired) make isValid() false
-$status = PassStatus::from($pass->status->getValue());
-
-if ($status->isTerminal()) {
-    // Cannot transfer terminal passes
+// Must be valid (not Used, Cancelled, Revoked, Voided, or Expired)
+if (! $pass->isValid()) {
+    // Cannot transfer invalid passes
 }
 
-$pass->isValid();                                  // bool
-app(PassTransferServiceInterface::class)->canTransfer($pass); // bool
+// Must not be past transfer deadline
+if ($pass->transfer_expires_at !== null && now()->isAfter($pass->transfer_expires_at)) {
+    // Transfer window has closed
+}
 ```
 
-Check `transfer_expires_at` on the pass — it is derived from the ticketable model's
-transfer window:
+Check `transfer_expires_at` on the pass:
 
 ```php
-// The ticketable model's transferWindowEndsAt() is the source of truth
+// The ticketable model's transferWindowEndsAt() is the source of truth at issuance
 $deadline = $workshop->transferWindowEndsAt();
 ```
 
@@ -173,7 +161,7 @@ $enabled = config('ticketing.features.auto_issue_passes');
 Check the listener is registered:
 
 ```bash
-php artisan event:list | grep IssuePassesOnOrderPaid
+php artisan event:list | grep IssuePassesOnFulfillment
 ```
 
 ### Migration Issues
@@ -243,18 +231,19 @@ When reporting issues, include:
 - **Use** `forOwner()` explicitly when owner context is ambiguous
 
 ### State Machine
-- Only `Voided` and `Expired` are truly terminal
-- `Used` and `Cancelled` can still move to `Revoked`; `Revoked` can still move to `Voided`
-- `Pending` passes must be issued before they can be activated or used
+- **Terminal** states are Voided and Expired — they cannot transition
+- **Used** and **Cancelled** passes can still transition to Revoked; **Revoked** passes can transition to Voided
+- **Cancelled** passes cannot be re-issued — create a new pass instead
+- **Pending** passes must be issued before they can be used
 
 ### Transfers
 - **Bulk** transfers respect `bulk_max_size` — batch larger operations
-- **Grace** period extends the transfer window in seconds
+- **Grace** period extends the transfer window in minutes
 - **Notifications** require holder email to be set
 
 ### Pricing
 - **All** prices are in minor units (e.g., cents/sen)
-- **Components** must sum to the total price
+- **Components** link child ticket types with a quantity multiplier (expanded via `ExpandTicketTypeComponentsAction`)
 - **Currency** is per-ticket-type, not inherited
 
 ## Read next

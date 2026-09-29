@@ -46,9 +46,6 @@ This creates the following tables:
 | `ticket_pass_holders` | Pass holder records |
 | `ticket_pass_transfers` | Pass transfer audit log |
 
-Only the `passes`, `pass_holders`, and `pass_transfers` tables are prefixed with
-`ticketing.database.table_prefix`; the four ticket-type tables are unprefixed by default.
-
 Table names can be overridden via config or environment variables.
 
 ## Publish Config
@@ -61,13 +58,12 @@ This creates `config/ticketing.php` with all available options.
 
 ## Scheduled Tasks
 
-`ticketing:expire-transfers` is the package's only console command. It closes transfer
-windows that have lapsed; add it to `routes/console.php`:
+If you use transfer-window expiry, add to your `routes/console.php`:
 
 ```php
 use Illuminate\Support\Facades\Schedule;
 
-Schedule::command('ticketing:expire-transfers')->daily();
+Schedule::command('ticketing:expire-transfers')->hourly();
 ```
 
 ## Optional Dependencies
